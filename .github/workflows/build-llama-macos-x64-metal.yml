@@ -53,11 +53,14 @@ jobs:
 
       - name: Prepare Artifact Structure
         run: |
-          # Gather required binaries into a centralized folder before archiving
+          # Gather required binaries AND dynamic libraries into the centralized folder
           mkdir -p dist
           cp build/bin/llama-cli dist/
           cp build/bin/llama-server dist/
           cp build/bin/llama-quantize dist/
+          
+          # Crucial fix: Copy all generated shared libraries (.dylib) required by llama-server at runtime
+          cp build/bin/*.dylib dist/ 2>/dev/null || true
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
