@@ -3,7 +3,7 @@ name: Build llama.cpp for Intel x86_64 + AMD GPU (macOS 15)
 on:
   push:
     branches: [ main, master ]
-  workflow_dispatch: # Allows single-click manual run without asking for inputs
+  workflow_dispatch: # Allows single-click manual run without any inputs
 
 jobs:
   build-intel-amd:
@@ -11,27 +11,20 @@ jobs:
     runs-on: macos-15-intel
 
     steps:
-      - name: Fetch Latest Official llama.cpp Tag
-        id: fetch_tag
-        run: |
-          # Fetch the latest release tag name directly from the official upstream repository API
-          LATEST_TAG=$(curl -s https://github.com | jq -r .tag_name)
-          
-          # Fallback mechanism if the release API is rate-limited or fails
-          if [ "$LATEST_TAG" = "null" ] || [ -z "$LATEST_TAG" ]; then
-            LATEST_TAG=$(curl -s https://github.com | jq -r '.[0].name')
-          fi
-          
-          echo "Latest tag found: $LATEST_TAG"
-          echo "TAG=$LATEST_TAG" >> $GITHUB_OUTPUT
-
-      - name: Checkout upstream llama.cpp source code
+      - name: Checkout upstream llama.cpp master branch
         uses: actions/checkout@v4
         with:
-          # Automatically pulls from the official upstream repository using the resolved tag
+          # Always pulls the latest code from the official master branch
           repository: 'ggml-org/llama.cpp'
-          ref: ${{ steps.fetch_tag.outputs.TAG }}
+          ref: 'master'
           submodules: recursive
+
+      - name: Get Short Commit SHA for Artifact Naming
+        id: get_sha
+        run: |
+          # Calculate the short git SHA to append to the artifact file name
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          echo "SHA=$SHORT_SHA" >> $GITHUB_OUTPUT
 
       - name: Install Dependencies
         run: |
@@ -69,6 +62,6 @@ jobs:
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
-          # Automatically names the output file according to your template: llama-${{ TAG }}-metal-macos-x64
-          name: llama-${{ steps.fetch_tag.outputs.TAG }}-metal-macos-x64
+          # Dynamic artifact name pattern requested: llama-[commit_sha]-metal-macos-x64
+          name: llama-${{ steps.get_sha.outputs.SHA }}-metal-macos-x64
           path: dist/
