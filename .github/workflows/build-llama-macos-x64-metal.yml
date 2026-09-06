@@ -1,0 +1,77 @@
+name: Build llama.cpp for Intel x86_64 + AMD GPU (macOS 15)
+
+on:
+  push:
+    tags:
+      - 'v*'
+      - 'b*'
+  workflow_dispatch:
+    inputs:
+      llama_tag:
+        description: 'Specify llama.cpp tag manually (e.g., b10819)'
+        required: true
+        default: 'latest'
+
+jobs:
+  build-intel-amd:
+    # Explicitly use macOS 15 on Intel x86_64 runners
+    runs-on: macos-15-intel
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Determine llama.cpp Tag Version
+        id: get_tag
+        run: |
+          # Dynamically resolve the version tag for naming the final artifact
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "TAG=${{ github.event.inputs.llama_tag }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "TAG=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          else
+            # Fallback for branch pushes if a tag isn't explicitly present
+            echo "TAG=compiled-$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install Dependencies
+        run: |
+          brew update
+          brew install cmake
+
+      - name: Configure CMake for Intel & Metal
+        run: |
+          # Enable Metal acceleration and explicitly target x86_64 with AVX2 instruction sets
+          cmake -B build \
+            -DGGML_METAL=ON \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS="-mavx2" \
+            -DCMAKE_CXX_FLAGS="-mavx2"
+
+      - name: Build Binaries
+        run: |
+          # Compile binaries using parallel processing mapping to available virtual cores
+          cmake --build build --config Release --parallel $(sysctl -n hw.ncpu)
+
+      - name: Test Build Architecture
+        run: |
+          # Verify the binary is compiled for x86_64 architecture instead of arm64
+          file ./build/bin/llama-cli
+          ./build/bin/llama-cli --help | head -n 10
+
+      - name: Prepare Artifact Structure
+        run: |
+          # Gather required binaries into a centralized folder before archiving
+          mkdir -p dist
+          cp build/bin/llama-cli dist/
+          cp build/bin/llama-server dist/
+          cp build/bin/llama-quantize dist/
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          # Dynamically set the output artifact name requested: llama-${{ TAG }}-metal-macos-x64
+          name: llama-${{ steps.get_tag.outputs.TAG }}-metal-macos-x64
+          path: dist/
