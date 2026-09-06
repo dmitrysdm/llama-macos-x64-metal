@@ -1,67 +1,101 @@
-name: Build llama.cpp for Intel x86_64 + AMD GPU (macOS 15)
-
+name: Build official llama.cpp (macOS x64, Vulkan)
 on:
+  workflow_dispatch:
   push:
     branches: [ main, master ]
-  workflow_dispatch:
-
+  pull_request:
+    branches: [ main, master ]
 jobs:
-  build-intel-amd:
+  build:
     runs-on: macos-15-intel
-
     steps:
-      - name: Checkout upstream llama.cpp master branch
-        uses: actions/checkout@v4
-        with:
-          repository: 'ggml-org/llama.cpp'
-          ref: 'master'
-          submodules: recursive
-
-      - name: Get Short Commit SHA for Artifact Naming
-        id: get_sha
-        run: |
-          SHORT_SHA=$(git rev-parse --short HEAD)
-          echo "SHA=$SHORT_SHA" >> $GITHUB_OUTPUT
-
-      - name: Install Dependencies
-        run: |
-          brew update
-          brew install cmake
-
-      - name: Configure CMake with Custom RPATH
-        run: |
-          # CMAKE_INSTALL_RPATH="@loader_path" forces binaries to look for .dylib inside their own folder at runtime
-          cmake -B build \
-            -DGGML_METAL=ON \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_RPATH="@loader_path" \
-            -DCMAKE_C_FLAGS="-mavx2" \
-            -DCMAKE_CXX_FLAGS="-mavx2"
-
-      - name: Build Binaries
-        run: |
-          cmake --build build --config Release --parallel $(sysctl -n hw.ncpu)
-
-      - name: Test Build Architecture
-        run: |
-          file ./build/bin/llama-cli
-          ./build/bin/llama-cli --help | head -n 10
-
-      - name: Prepare Artifact Structure
-        run: |
-          # Create deployment folder
-          mkdir -p dist
-          
-          # Copy executables
-          cp build/bin/llama-cli dist/
-          cp build/bin/llama-server dist/
-          cp build/bin/llama-quantize dist/
-          
-          # Copy all required dynamic libraries into the exact same folder
-          cp build/bin/*.dylib dist/ 2>/dev/null || true
-
-      - name: Upload Build Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: llama-${{ steps.get_sha.outputs.SHA }}-metal-macos-x64
-          path: dist/
+    - name: Checkout Official llama.cpp repository
+      uses: actions/checkout@v4
+      with:
+        repository: ggml-org/llama.cpp
+        path: llama.cpp
+    - name: Install dependencies
+      run: |
+        brew update
+        brew install cmake
+        brew install vulkan-headers vulkan-loader molten-vk shaderc spirv-headers
+    - name: Get commit SHA
+      id: get_sha
+      run: |
+        cd llama.cpp
+        echo "SHA=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+    - name: Build with Vulkan support (link directly to MoltenVK)
+      run: |
+        cd llama.cpp
+        mkdir -p build && cd build
+        cmake .. \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DGGML_VULKAN=ON \
+          -DGGML_METAL=OFF \
+          -DLLAMA_CURL=OFF \
+          -DLLAMA_USE_OPENSSL=OFF \
+          -DVulkan_LIBRARY=/usr/local/lib/libMoltenVK.dylib \
+          -DVulkan_INCLUDE_DIR=/usr/local/include
+        cmake --build . --config Release -j $(sysctl -n hw.ncpu)
+    - name: Package artifacts with full dependency collection and RPATH fix
+      run: |
+        cd llama.cpp/build
+        mkdir -p package
+        
+        # 1. Копируем бинарники И внутренние динамические библиотеки llama.cpp
+        cp -r bin/* package/ 2>/dev/null || true
+        find . -maxdepth 2 -name "*.dylib" -exec cp {} package/ \; 2>/dev/null || true
+        cp /usr/local/lib/libMoltenVK.dylib package/ 2>/dev/null || true
+        
+        # 2. Сбор внешних системных зависимостей (из Homebrew)
+        collect_deps() {
+          local file="$1"
+          if [[ ! -f "$file" ]]; then return; fi
+          otool -L "$file" 2>/dev/null | grep -E '/usr/local/opt|/usr/local/Cellar|/usr/local/lib' | awk '{print $1}' | while read dep; do
+            if [[ -L "$dep" ]]; then
+              dep=$(readlink -f "$dep")
+            fi
+            echo "$dep"
+          done
+        }
+        DEPS_FILE=$(mktemp)
+        for f in package/*; do
+          if [[ -f "$f" ]]; then
+            collect_deps "$f" >> "$DEPS_FILE"
+          fi
+        done
+        sort -u "$DEPS_FILE" | while read dep; do
+          if [[ -f "$dep" ]]; then
+            cp -L "$dep" package/ 2>/dev/null || true
+          fi
+        done
+        rm -f "$DEPS_FILE"
+        
+        # 3. Исправление путей поиска либ (@executable_path) для автономной работы
+        cd package
+        for file in *; do
+          if [[ -f "$file" ]]; then
+            # Собираем как внешние пути, так и относительные @rpath, которые жестко зашиты
+            deps=$(otool -L "$file" 2>/dev/null | grep -E '(@rpath|/usr/local/opt|/usr/local/Cellar|/usr/local/lib)' | awk '{print $1}')
+            for dep in $deps; do
+              libname=$(basename "$dep")
+              install_name_tool -change "$dep" "@executable_path/$libname" "$file" 2>/dev/null || true
+            done
+            # Дополнительно добавляем текущую директорию в rpath бинарников
+            if [[ "$file" != *.dylib ]]; then
+              install_name_tool -add_rpath "@executable_path/" "$file" 2>/dev/null || true
+            fi
+            # Фиксируем собственный ID для dylib
+            if [[ "$file" == *.dylib ]]; then
+              install_name_tool -id "@executable_path/$file" "$file" 2>/dev/null || true
+            fi
+          fi
+        done
+        
+        zip -r ../llama-cpp-${{ env.SHA }}-bin-macos-x64-vulkan.zip .
+        cd ..
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: llama-cpp-${{ env.SHA }}-bin-macos-x64-vulkan
+        path: llama.cpp/build/llama-cpp-${{ env.SHA }}-bin-macos-x64-vulkan.zip
