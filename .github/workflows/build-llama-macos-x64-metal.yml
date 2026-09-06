@@ -2,15 +2,8 @@ name: Build llama.cpp for Intel x86_64 + AMD GPU (macOS 15)
 
 on:
   push:
-    tags:
-      - 'v*'
-      - 'b*'
-  workflow_dispatch:
-    inputs:
-      llama_tag:
-        description: 'Specify llama.cpp tag manually (e.g., b10819)'
-        required: true
-        default: 'latest'
+    branches: [ main, master ]
+  workflow_dispatch: # Allows single-click manual run without asking for inputs
 
 jobs:
   build-intel-amd:
@@ -18,23 +11,27 @@ jobs:
     runs-on: macos-15-intel
 
     steps:
-      - name: Checkout repository
+      - name: Fetch Latest Official llama.cpp Tag
+        id: fetch_tag
+        run: |
+          # Fetch the latest release tag name directly from the official upstream repository API
+          LATEST_TAG=$(curl -s https://github.com | jq -r .tag_name)
+          
+          # Fallback mechanism if the release API is rate-limited or fails
+          if [ "$LATEST_TAG" = "null" ] || [ -z "$LATEST_TAG" ]; then
+            LATEST_TAG=$(curl -s https://github.com | jq -r '.[0].name')
+          fi
+          
+          echo "Latest tag found: $LATEST_TAG"
+          echo "TAG=$LATEST_TAG" >> $GITHUB_OUTPUT
+
+      - name: Checkout upstream llama.cpp source code
         uses: actions/checkout@v4
         with:
+          # Automatically pulls from the official upstream repository using the resolved tag
+          repository: 'ggml-org/llama.cpp'
+          ref: ${{ steps.fetch_tag.outputs.TAG }}
           submodules: recursive
-
-      - name: Determine llama.cpp Tag Version
-        id: get_tag
-        run: |
-          # Dynamically resolve the version tag for naming the final artifact
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "TAG=${{ github.event.inputs.llama_tag }}" >> $GITHUB_OUTPUT
-          elif [ "${{ github.ref_type }}" = "tag" ]; then
-            echo "TAG=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-          else
-            # Fallback for branch pushes if a tag isn't explicitly present
-            echo "TAG=compiled-$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-          fi
 
       - name: Install Dependencies
         run: |
@@ -72,6 +69,6 @@ jobs:
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
-          # Dynamically set the output artifact name requested: llama-${{ TAG }}-metal-macos-x64
-          name: llama-${{ steps.get_tag.outputs.TAG }}-metal-macos-x64
+          # Automatically names the output file according to your template: llama-${{ TAG }}-metal-macos-x64
+          name: llama-${{ steps.fetch_tag.outputs.TAG }}-metal-macos-x64
           path: dist/
