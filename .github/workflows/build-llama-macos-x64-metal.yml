@@ -3,18 +3,16 @@ name: Build llama.cpp for Intel x86_64 + AMD GPU (macOS 15)
 on:
   push:
     branches: [ main, master ]
-  workflow_dispatch: # Allows single-click manual run without any inputs
+  workflow_dispatch:
 
 jobs:
   build-intel-amd:
-    # Explicitly use macOS 15 on Intel x86_64 runners
     runs-on: macos-15-intel
 
     steps:
       - name: Checkout upstream llama.cpp master branch
         uses: actions/checkout@v4
         with:
-          # Always pulls the latest code from the official master branch
           repository: 'ggml-org/llama.cpp'
           ref: 'master'
           submodules: recursive
@@ -22,7 +20,6 @@ jobs:
       - name: Get Short Commit SHA for Artifact Naming
         id: get_sha
         run: |
-          # Calculate the short git SHA to append to the artifact file name
           SHORT_SHA=$(git rev-parse --short HEAD)
           echo "SHA=$SHORT_SHA" >> $GITHUB_OUTPUT
 
@@ -31,40 +28,40 @@ jobs:
           brew update
           brew install cmake
 
-      - name: Configure CMake for Intel & Metal
+      - name: Configure CMake with Custom RPATH
         run: |
-          # Enable Metal acceleration and explicitly target x86_64 with AVX2 instruction sets
+          # CMAKE_INSTALL_RPATH="@loader_path" forces binaries to look for .dylib inside their own folder at runtime
           cmake -B build \
             -DGGML_METAL=ON \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_RPATH="@loader_path" \
             -DCMAKE_C_FLAGS="-mavx2" \
             -DCMAKE_CXX_FLAGS="-mavx2"
 
       - name: Build Binaries
         run: |
-          # Compile binaries using parallel processing mapping to available virtual cores
           cmake --build build --config Release --parallel $(sysctl -n hw.ncpu)
 
       - name: Test Build Architecture
         run: |
-          # Verify the binary is compiled for x86_64 architecture instead of arm64
           file ./build/bin/llama-cli
           ./build/bin/llama-cli --help | head -n 10
 
       - name: Prepare Artifact Structure
         run: |
-          # Gather required binaries AND dynamic libraries into the centralized folder
+          # Create deployment folder
           mkdir -p dist
+          
+          # Copy executables
           cp build/bin/llama-cli dist/
           cp build/bin/llama-server dist/
           cp build/bin/llama-quantize dist/
           
-          # Crucial fix: Copy all generated shared libraries (.dylib) required by llama-server at runtime
+          # Copy all required dynamic libraries into the exact same folder
           cp build/bin/*.dylib dist/ 2>/dev/null || true
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
-          # Dynamic artifact name pattern requested: llama-[commit_sha]-metal-macos-x64
           name: llama-${{ steps.get_sha.outputs.SHA }}-metal-macos-x64
           path: dist/
